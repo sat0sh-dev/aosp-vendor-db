@@ -1,0 +1,72 @@
+# Data Broker Daemon SELinux Policy
+#
+# This policy allows db_daemon to:
+# - Run as a vendor daemon process
+# - Create UDS sockets for vendor daemon IPC (Phase 3.7: trust-based)
+# - Create TCP/IP sockets for app IPC (Phase 3.6/3.7: token-based)
+# - Load Hook library (dlopen) for authentication (Phase 3.6)
+# - Write logs to logcat
+
+# Type declarations
+type db_daemon, domain;
+type db_daemon_exec, exec_type, vendor_file_type, file_type;
+type db_data_file, file_type, data_file_type;
+
+# Domain transition from init
+# Note: vendorポリシーではinit_daemon_domainマクロは使えない
+allow init db_daemon_exec:file { read open execute getattr };
+allow init db_daemon:process { transition rlimitinh siginh };
+allow db_daemon db_daemon_exec:file { read open execute getattr entrypoint };
+type_transition init db_daemon_exec:process db_daemon;
+
+# Allow db_daemon to use vendor files
+allow db_daemon vendor_file:dir { search read open getattr };
+allow db_daemon vendor_file:file { read open getattr execute };
+
+# Phase 3.7: UDS socket for vendor daemon IPC (trust-based)
+allow db_daemon self:unix_stream_socket { create bind listen accept read write getopt setopt shutdown };
+allow db_daemon db_data_file:dir { create_dir_perms rw_dir_perms };
+allow db_daemon db_data_file:sock_file { create setattr getattr unlink write };
+
+# Phase 3.6/3.7: TCP/IP socket for app IPC (token-based)
+allow db_daemon self:tcp_socket { create bind listen accept read write getopt setopt shutdown };
+allow db_daemon node:tcp_socket node_bind;
+allow db_daemon port:tcp_socket name_bind;
+
+# Allow logcat access for logging (stderr -> logcat)
+allow db_daemon logd:unix_dgram_socket sendto;
+allow db_daemon logdr_socket:sock_file write;
+
+# Allow stdio_to_kmsg (stderr -> kmsg -> logcat)
+allow db_daemon kmsg_debug_device:chr_file { write open };
+
+# Phase 3.8: Permission checking - ⚠️ PENDING ISSUE (not implemented)
+#
+# Server-side Layer 2 (permission) verification is NOT possible from vendor domain.
+# This is a documented limitation, NOT a resolved issue.
+#
+# Attempted solutions (all failed):
+#
+# 1. Binder IPC (IPermissionChecker):
+#    - vendor domain cannot access /dev/binder (only /dev/vndbinder)
+#    - permission_checker service runs on system servicemanager
+#    - Result: Service not found (Treble binder separation)
+#
+# 2. Command execution (cmd package check-permission):
+#    - /system/bin/cmd is labeled as system_file
+#    - SELinux neverallow prevents vendor from executing system_file
+#    - Result: Build failure - neverallow violation
+#
+# Current status: PENDING
+# - Layer 2 server-side verification is skipped (not implemented)
+# - Client (DbApp) checks permission before connecting
+# - This is NOT a security solution, just a workaround for POC
+#
+# Production requirements:
+# - HAL service that can relay permission checks
+# - System App bridge between vendor and system domains
+#
+# See: docs/phase-3.8-permission-consent-design.md
+
+# Allow getting TCP socket attributes (for client connection handling)
+allow db_daemon self:tcp_socket getattr;

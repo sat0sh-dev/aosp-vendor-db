@@ -1,0 +1,14 @@
+# Data Broker Daemon init configuration
+# Phase 3.7: Dual-mode authentication (UDS + TCP/IP)
+
+# Phase 3.7: Create UDS socket directory on boot
+on post-fs-data
+    mkdir /data/vendor/db 0770 system system
+    restorecon_recursive /data/vendor/db
+
+service db_daemon /vendor/bin/db_daemon
+    class hal
+    user system
+    group system
+    seclabel u:r:db_daemon:s0
+    stdio_to_kmsg

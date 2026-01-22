@@ -1,0 +1,7 @@
+# Data Broker SELinux File Contexts
+
+# db_daemon binary
+/vendor/bin/db_daemon    u:object_r:db_daemon_exec:s0
+
+# Phase 3.7: UDS socket directory and socket file
+/data/vendor/db(/.*)?    u:object_r:db_data_file:s0

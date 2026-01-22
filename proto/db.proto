@@ -1,0 +1,50 @@
+// Data Broker gRPC API Definition
+// Phase 1: Basic Get/Set operations (no authentication)
+
+syntax = "proto3";
+
+package databroker;
+
+// Data Broker Service
+service DataBroker {
+  // Get a value by key
+  rpc GetValue(GetValueRequest) returns (GetValueResponse);
+
+  // Set a value by key
+  rpc SetValue(SetValueRequest) returns (SetValueResponse);
+
+  // Subscribe to value changes (for future Pub/Sub)
+  // rpc Subscribe(SubscribeRequest) returns (stream ValueUpdate);
+}
+
+// Get Value Request
+message GetValueRequest {
+  string key = 1;
+}
+
+// Get Value Response
+message GetValueResponse {
+  bool success = 1;
+  string key = 2;
+  string value = 3;
+  string error_message = 4;
+}
+
+// Set Value Request
+message SetValueRequest {
+  string key = 1;
+  string value = 2;
+}
+
+// Set Value Response
+message SetValueResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// Value Update (for future Pub/Sub)
+// message ValueUpdate {
+//   string key = 1;
+//   string value = 2;
+//   int64 timestamp = 3;
+// }

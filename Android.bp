@@ -1,0 +1,33 @@
+// Data Broker (Db) Build Definition
+// Phase 1: TCP server with Get/Set APIs (text protocol) (DEPRECATED)
+// Phase 2.5: Auth module integration via FFI (DEPRECATED)
+// Phase 3.0: UDS migration with SO_PEERCRED (DEPRECATED)
+// Phase 3.5: Auth daemon integration (UDS client)
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_binary {
+    name: "db_daemon",
+    crate_name: "db_daemon",
+    srcs: ["src/main.rs"],
+    edition: "2021",
+
+    // Phase 3.0: Dependencies including libc for SO_PEERCRED
+    rustlibs: [
+        "liblog_rust",
+        "libenv_logger",
+        "liblibc",
+    ],
+
+    // Phase 3.5: No FFI dependencies!
+    // Auth verification is now delegated to Auth daemon via UDS
+    // This keeps Db clean and OSS-compatible
+
+    // Vendor configuration
+    vendor: true,
+
+    // Logging
+    prefer_rlib: true,
+}
