@@ -3,8 +3,7 @@
 PRODUCT_PACKAGES += \
     db_daemon
 
-PRODUCT_COPY_FILES += \
-    vendor/db/db_daemon.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/db_daemon.rc
+# Note: db_daemon.rc is included via Android.bp init_rc property
 
 BOARD_VENDOR_SEPOLICY_DIRS += \
     vendor/db/sepolicy
