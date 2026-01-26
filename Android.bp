@@ -28,6 +28,9 @@ rust_binary {
     // Vendor configuration
     vendor: true,
 
+    // Init script for auto-start
+    init_rc: ["db_daemon.rc"],
+
     // Logging
     prefer_rlib: true,
 }
