@@ -10,10 +10,10 @@
 # - Write logs to logcat
 
 # Type declarations
-type db_daemon, domain;
-# Add vendor_file_type to allow entrypoint (neverallow bypass for product partition)
-type db_daemon_exec, exec_type, vendor_file_type, file_type;
-type db_data_file, file_type, data_file_type;
+# Product partition requires: coredomain for domain, system_file_type for exec, core_data_file_type for data
+type db_daemon, domain, coredomain;
+type db_daemon_exec, exec_type, file_type, system_file_type;
+type db_data_file, file_type, data_file_type, core_data_file_type;
 
 # Domain transition from init
 init_daemon_domain(db_daemon)
