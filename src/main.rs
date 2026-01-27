@@ -397,7 +397,7 @@ fn main() {
     }
 
     // Phase 3.7: Start UDS server (vendor daemons)
-    let uds_path = "/data/vendor/db/data_broker.sock";
+    let uds_path = "/data/misc/db/data_broker.sock";
 
     // Remove old socket file if exists
     let _ = std::fs::remove_file(uds_path);
