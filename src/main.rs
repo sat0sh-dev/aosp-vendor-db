@@ -78,8 +78,8 @@ fn auth_verify_via_hook(package_name: &str, token: &str, uid: u32, pid: u32) -> 
     use libc::{dlopen, dlsym, dlclose, RTLD_LAZY};
     use std::sync::Once;
 
-    // Phase 3.6: Hook library path
-    let hook_path = "/vendor/lib64/libauth_hook.so";
+    // Phase 3.6: Hook library path (moved to product partition in Phase 3.8)
+    let hook_path = "/product/lib64/libauth_hook.so";
 
     log::info!("[Phase 3.6] Loading Auth Hook from: {}", hook_path);
 
