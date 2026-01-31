@@ -37,6 +37,13 @@ allow db_daemon logdr_socket:sock_file write;
 # Allow stdio_to_kmsg (stderr -> kmsg -> logcat)
 allow db_daemon kmsg_debug_device:chr_file { write open };
 
+# Phase 3.10: UDS communication from apps (experimental)
+# Allow untrusted_app to connect to db_daemon via UDS
+# This enables simpler authentication (UID-based) instead of Keystore Attestation
+allow untrusted_app db_data_file:dir search;
+allow untrusted_app db_data_file:sock_file write;
+allow untrusted_app db_daemon:unix_stream_socket connectto;
+
 # Phase 3.8: Permission checking
 # Note: Product domain can potentially access system binder
 # This needs to be tested - may enable server-side permission verification
