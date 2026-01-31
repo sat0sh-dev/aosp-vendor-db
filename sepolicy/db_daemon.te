@@ -44,6 +44,9 @@ allow untrusted_app db_data_file:dir search;
 allow untrusted_app db_data_file:sock_file write;
 allow untrusted_app db_daemon:unix_stream_socket connectto;
 
-# Phase 3.8: Permission checking
-# Note: Product domain can potentially access system binder
-# This needs to be tested - may enable server-side permission verification
+# Phase 3.8/3.10: System Binder access for IPackageManagerNative
+# Product partition with coredomain may access system binder (unlike vendor partition)
+# This enables UID -> package name lookup for UDS authentication
+binder_use(db_daemon)
+binder_call(db_daemon, system_server)
+allow db_daemon package_native_service:service_manager find;
