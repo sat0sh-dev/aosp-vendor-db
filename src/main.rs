@@ -60,6 +60,87 @@ fn get_peer_credentials(stream: &UnixStream) -> io::Result<(u32, u32)> {
 }
 
 /**
+ * Phase 3.10: Look up package name from UID using /data/system/packages.list
+ *
+ * The packages.list file format (space-separated):
+ *   package_name uid debug_flag data_dir seinfo [optional...]
+ *
+ * Example:
+ *   com.example.dbapp 10123 0 /data/user/0/com.example.dbapp default:targetSdkVersion=34
+ *
+ * Android multi-user UID calculation:
+ *   actual_uid = userId * 100000 + appId
+ *   packages.list contains appId (for user 0)
+ *
+ * @param uid App UID to look up (may include userId prefix)
+ * @return Package name if found, None otherwise
+ */
+fn uid_to_package_name(uid: u32) -> Option<String> {
+    const PACKAGES_LIST_PATH: &str = "/data/system/packages.list";
+    const PER_USER_RANGE: u32 = 100000;
+
+    // Extract appId from multi-user UID
+    // userId = uid / 100000, appId = uid % 100000
+    let user_id = uid / PER_USER_RANGE;
+    let app_id = uid % PER_USER_RANGE;
+
+    log::info!("[Phase 3.10] UID {} -> userId={}, appId={}", uid, user_id, app_id);
+
+    let content = match std::fs::read_to_string(PACKAGES_LIST_PATH) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("[Phase 3.10] Failed to read {}: {}", PACKAGES_LIST_PATH, e);
+            return None;
+        }
+    };
+
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // Format: package_name uid ...
+        if parts.len() >= 2 {
+            if let Ok(line_uid) = parts[1].parse::<u32>() {
+                // Compare with appId (packages.list contains appId for user 0)
+                if line_uid == app_id {
+                    let package_name = parts[0].to_string();
+                    log::info!("[Phase 3.10] UID {} (appId={}) -> package: {}", uid, app_id, package_name);
+                    return Some(package_name);
+                }
+            }
+        }
+    }
+
+    log::warn!("[Phase 3.10] Package not found for UID {} (appId={})", uid, app_id);
+    None
+}
+
+/**
+ * Phase 3.10: Check if package is in allowed list
+ *
+ * This provides an additional layer of access control beyond SELinux.
+ * Only packages in the whitelist can access the Data Broker.
+ *
+ * @param package_name Package name to check
+ * @return true if allowed, false otherwise
+ */
+fn is_package_allowed(package_name: &str) -> bool {
+    // Phase 3.10: Allowed packages for UDS access
+    // In production, this would be loaded from a config file
+    const ALLOWED_PACKAGES: &[&str] = &[
+        "com.example.dbapp",
+        "com.vendor.dbclient",
+        // Add more allowed packages here
+    ];
+
+    let allowed = ALLOWED_PACKAGES.contains(&package_name);
+    if allowed {
+        log::info!("[Phase 3.10] Package '{}' is in allowed list", package_name);
+    } else {
+        log::warn!("[Phase 3.10] Package '{}' is NOT in allowed list", package_name);
+    }
+    allowed
+}
+
+/**
  * Verify token via Auth Hook (dlopen)
  *
  * Phase 3.6: Dynamically loads libauth_hook.so and calls auth_hook_verify_token()
@@ -147,17 +228,17 @@ fn auth_verify_via_hook(package_name: &str, token: &str, uid: u32, pid: u32) -> 
 }
 
 /**
- * Handle UDS client connection (vendor daemons)
+ * Handle UDS client connection (vendor daemons + apps)
  *
- * Phase 3.7: Option 2 (Defense-in-Depth)
+ * Phase 3.7: Option 2 (Defense-in-Depth) for vendor daemons
+ * Phase 3.10: UID-based authentication for apps
+ *
+ * Authentication flow:
  * - Extract UID/PID via SO_PEERCRED (kernel-provided, cannot be spoofed)
- * - Verify UID == 1000 (system)
- * - No token authentication required (trust-based within vendor domain)
- * - File permissions (0770 system:system) provide primary access control
- * - UID verification provides secondary defense layer:
- *   - Detects anomalies (e.g., root in debug builds)
- *   - Provides useful logging (UID/PID information)
- *   - Minimal overhead (~1μs)
+ * - UID 1000 (system): trust-based, auto-authenticated
+ * - UID >= 10000 (apps): look up package name from packages.list, verify whitelist
+ *
+ * This is simpler than TCP/IP + Keystore Attestation approach.
  */
 fn handle_uds_client(stream: UnixStream, store: DataStore) {
     // Phase 3.7: Extract kernel-provided credentials
@@ -172,8 +253,6 @@ fn handle_uds_client(stream: UnixStream, store: DataStore) {
     log::info!("[UDS] Client connected: uid={}, pid={}", uid, pid);
 
     // Phase 3.10: Allow both vendor daemons (UID=1000) and apps (UID>=10000)
-    // - UID 1000: system (vendor daemons) - trust-based, no AUTH required
-    // - UID >= 10000: apps - require AUTH command with token
     const SYSTEM_UID: u32 = 1000;
     const APP_UID_START: u32 = 10000;
 
@@ -188,30 +267,41 @@ fn handle_uds_client(stream: UnixStream, store: DataStore) {
         return;
     }
 
-    if is_vendor_daemon {
+    // Phase 3.10: Determine authentication status and package name
+    let (mut authenticated, mut package_name): (bool, Option<String>) = if is_vendor_daemon {
         log::info!("[UDS] ✅ Vendor daemon connected: uid={} (trust-based)", uid);
+        (true, Some(format!("vendor_daemon_uid{}_pid{}", uid, pid)))
     } else {
-        log::info!("[UDS] 📱 App connected: uid={} (token auth required)", uid);
-    }
+        // Phase 3.10: Look up package name from UID
+        log::info!("[UDS] 📱 App connected: uid={}, looking up package name...", uid);
+
+        match uid_to_package_name(uid) {
+            Some(pkg_name) => {
+                // Verify package is in allowed list
+                if is_package_allowed(&pkg_name) {
+                    log::info!("[UDS] ✅ App auto-authenticated: uid={}, package={}", uid, pkg_name);
+                    (true, Some(pkg_name))
+                } else {
+                    log::warn!("[UDS] ⚠️  Package '{}' not in allowed list, requiring AUTH", pkg_name);
+                    (false, Some(pkg_name))
+                }
+            }
+            None => {
+                log::warn!("[UDS] ⚠️  Package not found for UID={}, requiring AUTH", uid);
+                (false, None)
+            }
+        }
+    };
 
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
-
-    // Phase 3.10: Authentication depends on client type
-    // - Vendor daemons (UID=1000): pre-authenticated (trust-based)
-    // - Apps (UID>=10000): require AUTH command with token
-    let mut authenticated = is_vendor_daemon;
-    let mut package_name = if is_vendor_daemon {
-        Some(format!("vendor_daemon_uid{}_pid{}", uid, pid))
-    } else {
-        None  // Apps must authenticate via AUTH command
-    };
 
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) => {
-                log::info!("[UDS] Client disconnected: uid={}, pid={}", uid, pid);
+                log::info!("[UDS] Client disconnected: uid={}, pid={}, package={:?}",
+                          uid, pid, package_name);
                 break;
             }
             Ok(_) => {
