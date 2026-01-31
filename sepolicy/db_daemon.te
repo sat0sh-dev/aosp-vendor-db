@@ -11,9 +11,9 @@
 
 # Type declarations
 # Product partition requires: coredomain for domain, system_file_type for exec, core_data_file_type for data
-type db_daemon, domain, coredomain;
+type db_daemon, domain, coredomain, mlstrustedsubject;
 type db_daemon_exec, exec_type, file_type, system_file_type;
-type db_data_file, file_type, data_file_type, core_data_file_type;
+type db_data_file, file_type, data_file_type, core_data_file_type, mlstrustedobject;
 
 # Domain transition from init
 init_daemon_domain(db_daemon)
