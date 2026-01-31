@@ -423,14 +423,27 @@ fn main() {
         }
     };
 
-    // Phase 3.7: Set socket file permissions to 0770 (system:system can access)
-    // Default is 0700 which prevents other processes (even same UID) from connecting
+    // Phase 3.10: Set permissions for app access
+    // SELinux is the primary access control; filesystem permissions are secondary
+    // - Directory: 0771 (allow others to search/traverse)
+    // - Socket: 0666 (allow others to read/write)
     use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(uds_path, std::fs::Permissions::from_mode(0o770)) {
+
+    // Set directory permissions to allow app access
+    let uds_dir = std::path::Path::new(uds_path).parent().unwrap();
+    if let Err(e) = std::fs::set_permissions(uds_dir, std::fs::Permissions::from_mode(0o771)) {
+        log::error!("[UDS] Failed to set directory permissions: {}", e);
+        // Continue anyway - init.rc may have set correct permissions
+    } else {
+        log::info!("[UDS] Directory permissions set to 0771");
+    }
+
+    // Set socket file permissions
+    if let Err(e) = std::fs::set_permissions(uds_path, std::fs::Permissions::from_mode(0o666)) {
         log::error!("[UDS] Failed to set socket permissions: {}", e);
         return;
     }
-    log::info!("[UDS] Socket permissions set to 0770");
+    log::info!("[UDS] Socket permissions set to 0666 (SELinux provides access control)");
 
     // Phase 3.7: Start TCP server (apps)
     let tcp_addr = "127.0.0.1:50051";
