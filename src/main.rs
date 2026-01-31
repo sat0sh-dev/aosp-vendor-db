@@ -171,31 +171,41 @@ fn handle_uds_client(stream: UnixStream, store: DataStore) {
 
     log::info!("[UDS] Client connected: uid={}, pid={}", uid, pid);
 
-    // Phase 3.7: Defense-in-Depth - Verify UID == 1000
-    // - Production: Redundant (file permissions already restrict to UID=1000)
-    // - Debug: Necessary (root can bypass file permissions)
-    // - Benefits: Anomaly detection, logging, minimal overhead
+    // Phase 3.10: Allow both vendor daemons (UID=1000) and apps (UID>=10000)
+    // - UID 1000: system (vendor daemons) - trust-based, no AUTH required
+    // - UID >= 10000: apps - require AUTH command with token
     const SYSTEM_UID: u32 = 1000;
-    if uid != SYSTEM_UID {
-        log::warn!("[UDS] ⚠️  SECURITY ANOMALY: Connection from UID={}, expected UID={}", uid, SYSTEM_UID);
-        log::warn!("[UDS] ⚠️  Rejecting connection (Defense-in-Depth)");
-        log::warn!("[UDS] ⚠️  This may indicate: (1) root access in debug build, (2) security misconfiguration");
+    const APP_UID_START: u32 = 10000;
 
-        if let Err(e) = writeln!(&stream, "ERROR: Access denied (UID verification failed)") {
+    let is_vendor_daemon = uid == SYSTEM_UID;
+    let is_app = uid >= APP_UID_START;
+
+    if !is_vendor_daemon && !is_app {
+        log::warn!("[UDS] ⚠️  Rejecting connection from UID={} (not system or app)", uid);
+        if let Err(e) = writeln!(&stream, "ERROR: Access denied (UID {} not allowed)", uid) {
             log::error!("[UDS] Failed to send error response: {}", e);
         }
         return;
     }
 
-    log::info!("[UDS] ✅ UID verification passed: uid={} (trusted vendor daemon)", uid);
+    if is_vendor_daemon {
+        log::info!("[UDS] ✅ Vendor daemon connected: uid={} (trust-based)", uid);
+    } else {
+        log::info!("[UDS] 📱 App connected: uid={} (token auth required)", uid);
+    }
 
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
 
-    // Phase 3.7: UDS clients are pre-authenticated (trust-based)
-    // No AUTH command required for vendor daemons
-    let mut authenticated = true;
-    let mut package_name = Some(format!("vendor_daemon_uid{}_pid{}", uid, pid));
+    // Phase 3.10: Authentication depends on client type
+    // - Vendor daemons (UID=1000): pre-authenticated (trust-based)
+    // - Apps (UID>=10000): require AUTH command with token
+    let mut authenticated = is_vendor_daemon;
+    let mut package_name = if is_vendor_daemon {
+        Some(format!("vendor_daemon_uid{}_pid{}", uid, pid))
+    } else {
+        None  // Apps must authenticate via AUTH command
+    };
 
     loop {
         let mut line = String::new();
