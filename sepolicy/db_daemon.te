@@ -50,3 +50,7 @@ allow untrusted_app db_daemon:unix_stream_socket connectto;
 binder_use(db_daemon)
 binder_call(db_daemon, system_server)
 allow db_daemon package_native_service:service_manager find;
+
+# Phase 3.10: Read packages.list for UID -> package name mapping
+# /data/system/packages.list is managed by PackageManagerService
+allow db_daemon packages_list_file:file { open read getattr };

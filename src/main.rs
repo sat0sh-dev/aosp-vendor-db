@@ -391,7 +391,19 @@ fn process_command(
     // Protocol: AUTH <package_name> [token]
     // - If token is provided: Hook-based verification (Keystore Attestation)
     // - If token is absent: Legacy verification (Auth daemon via UDS)
+    //
+    // Phase 3.10.1: Skip AUTH processing if already authenticated via UDS auto-auth
     if command == "AUTH" {
+        // Phase 3.10.1: If already authenticated (e.g., via UDS UID-based auto-auth),
+        // skip the heavy Keystore Attestation verification
+        if *authenticated {
+            let current_pkg = package_name.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("unknown");
+            log::info!("[Phase 3.10.1] AUTH command received but already authenticated: package={}", current_pkg);
+            return format!("OK: Already authenticated as {}", current_pkg);
+        }
+
         if parts.len() < 2 {
             return "ERROR: AUTH requires package name".to_string();
         }
