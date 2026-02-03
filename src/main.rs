@@ -59,86 +59,8 @@ fn get_peer_credentials(stream: &UnixStream) -> io::Result<(u32, u32)> {
     }
 }
 
-/**
- * Phase 3.10: Look up package name from UID using /data/system/packages.list
- *
- * The packages.list file format (space-separated):
- *   package_name uid debug_flag data_dir seinfo [optional...]
- *
- * Example:
- *   com.example.dbapp 10123 0 /data/user/0/com.example.dbapp default:targetSdkVersion=34
- *
- * Android multi-user UID calculation:
- *   actual_uid = userId * 100000 + appId
- *   packages.list contains appId (for user 0)
- *
- * @param uid App UID to look up (may include userId prefix)
- * @return Package name if found, None otherwise
- */
-fn uid_to_package_name(uid: u32) -> Option<String> {
-    const PACKAGES_LIST_PATH: &str = "/data/system/packages.list";
-    const PER_USER_RANGE: u32 = 100000;
-
-    // Extract appId from multi-user UID
-    // userId = uid / 100000, appId = uid % 100000
-    let user_id = uid / PER_USER_RANGE;
-    let app_id = uid % PER_USER_RANGE;
-
-    log::info!("[Phase 3.10] UID {} -> userId={}, appId={}", uid, user_id, app_id);
-
-    let content = match std::fs::read_to_string(PACKAGES_LIST_PATH) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("[Phase 3.10] Failed to read {}: {}", PACKAGES_LIST_PATH, e);
-            return None;
-        }
-    };
-
-    for line in content.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        // Format: package_name uid ...
-        if parts.len() >= 2 {
-            if let Ok(line_uid) = parts[1].parse::<u32>() {
-                // Compare with appId (packages.list contains appId for user 0)
-                if line_uid == app_id {
-                    let package_name = parts[0].to_string();
-                    log::info!("[Phase 3.10] UID {} (appId={}) -> package: {}", uid, app_id, package_name);
-                    return Some(package_name);
-                }
-            }
-        }
-    }
-
-    log::warn!("[Phase 3.10] Package not found for UID {} (appId={})", uid, app_id);
-    None
-}
-
-/**
- * Phase 3.10: Check if package is in allowed list
- *
- * This provides an additional layer of access control beyond SELinux.
- * Only packages in the whitelist can access the Data Broker.
- *
- * @param package_name Package name to check
- * @return true if allowed, false otherwise
- */
-fn is_package_allowed(package_name: &str) -> bool {
-    // Phase 3.10: Allowed packages for UDS access
-    // In production, this would be loaded from a config file
-    const ALLOWED_PACKAGES: &[&str] = &[
-        "com.example.dbapp",
-        "com.vendor.dbclient",
-        // Add more allowed packages here
-    ];
-
-    let allowed = ALLOWED_PACKAGES.contains(&package_name);
-    if allowed {
-        log::info!("[Phase 3.10] Package '{}' is in allowed list", package_name);
-    } else {
-        log::warn!("[Phase 3.10] Package '{}' is NOT in allowed list", package_name);
-    }
-    allowed
-}
+// Phase 3.11: UDS authentication logic moved to libauth_hook.so
+// See auth_verify_uds_via_hook() below
 
 /**
  * Verify token via Auth Hook (dlopen)
@@ -228,17 +150,123 @@ fn auth_verify_via_hook(package_name: &str, token: &str, uid: u32, pid: u32) -> 
 }
 
 /**
+ * Verify UDS connection via Auth Hook (dlopen)
+ *
+ * Phase 3.11: UDS認証ロジックをHookに分離
+ * - UID→パッケージ名検索
+ * - ホワイトリスト照合
+ * - (オプション) Permission検証
+ *
+ * @param uid Client UID (from SO_PEERCRED)
+ * @param pid Client PID (from SO_PEERCRED)
+ * @param check_permission Whether to check Layer 2 Permission
+ * @return (authenticated, package_name)
+ */
+fn auth_verify_uds_via_hook(uid: u32, pid: u32, check_permission: bool) -> (bool, Option<String>) {
+    use libc::{dlopen, dlsym, RTLD_LAZY};
+    use std::sync::Once;
+
+    // Phase 3.6: Hook library path (moved to product partition in Phase 3.8)
+    let hook_path = "/product/lib64/libauth_hook.so";
+
+    log::info!("[Phase 3.11] Loading Auth Hook for UDS verification: {}", hook_path);
+
+    // Load shared library
+    let hook_path_c = CString::new(hook_path).unwrap();
+    let handle = unsafe { dlopen(hook_path_c.as_ptr(), RTLD_LAZY) };
+
+    if handle.is_null() {
+        log::error!("[Phase 3.11] Failed to load Auth Hook: {}", hook_path);
+        return (false, None);
+    }
+
+    // Phase 3.6: Call auth_hook_init() once on first load
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        log::info!("[Phase 3.11] First Hook load - calling auth_hook_init()");
+        let init_symbol = CString::new("auth_hook_init").unwrap();
+        let init_ptr = unsafe { dlsym(handle, init_symbol.as_ptr()) };
+
+        if !init_ptr.is_null() {
+            type InitFn = unsafe extern "C" fn();
+            let init_fn: InitFn = unsafe { std::mem::transmute(init_ptr) };
+            unsafe { init_fn() };
+            log::info!("[Phase 3.11] Hook initialization complete");
+        } else {
+            log::error!("[Phase 3.11] Symbol 'auth_hook_init' not found in Hook");
+        }
+    });
+
+    // Lookup symbol: auth_hook_verify_uds
+    let symbol_name = CString::new("auth_hook_verify_uds").unwrap();
+    let func_ptr = unsafe { dlsym(handle, symbol_name.as_ptr()) };
+
+    if func_ptr.is_null() {
+        log::error!("[Phase 3.11] Symbol 'auth_hook_verify_uds' not found in Hook");
+        // Fallback: auth_hook may be an older version without UDS support
+        // Return false to require token-based authentication
+        return (false, None);
+    }
+
+    // Cast to function pointer type
+    // bool auth_hook_verify_uds(uint32_t uid, uint32_t pid, char* out_pkg, size_t out_len, bool check_perm)
+    type VerifyUdsFn = unsafe extern "C" fn(u32, u32, *mut libc::c_char, libc::size_t, bool) -> bool;
+    let verify_uds: VerifyUdsFn = unsafe { std::mem::transmute(func_ptr) };
+
+    // Prepare output buffer for package name
+    const PKG_NAME_BUF_SIZE: usize = 256;
+    let mut pkg_name_buf: Vec<u8> = vec![0u8; PKG_NAME_BUF_SIZE];
+
+    // Call Hook function
+    log::info!("[Phase 3.11] Calling auth_hook_verify_uds(uid={}, pid={}, check_permission={})",
+              uid, pid, check_permission);
+
+    let result = unsafe {
+        verify_uds(
+            uid,
+            pid,
+            pkg_name_buf.as_mut_ptr() as *mut libc::c_char,
+            PKG_NAME_BUF_SIZE,
+            check_permission,
+        )
+    };
+
+    // Extract package name from buffer
+    let package_name = if result {
+        // Find null terminator
+        let null_pos = pkg_name_buf.iter().position(|&b| b == 0).unwrap_or(PKG_NAME_BUF_SIZE);
+        if null_pos > 0 {
+            String::from_utf8_lossy(&pkg_name_buf[..null_pos]).to_string()
+        } else {
+            None.unwrap_or_else(|| "unknown".to_string())
+        }
+    } else {
+        "".to_string()
+    };
+
+    log::info!("[Phase 3.11] Hook UDS verification result: {}, package: {}", result, package_name);
+
+    if result && !package_name.is_empty() {
+        (true, Some(package_name))
+    } else {
+        (false, None)
+    }
+}
+
+/**
  * Handle UDS client connection (vendor daemons + apps)
  *
  * Phase 3.7: Option 2 (Defense-in-Depth) for vendor daemons
  * Phase 3.10: UID-based authentication for apps
+ * Phase 3.11: Authentication logic moved to Hook (libauth_hook.so)
  *
  * Authentication flow:
  * - Extract UID/PID via SO_PEERCRED (kernel-provided, cannot be spoofed)
- * - UID 1000 (system): trust-based, auto-authenticated
- * - UID >= 10000 (apps): look up package name from packages.list, verify whitelist
+ * - Call auth_hook_verify_uds() via dlopen
+ *   - UID 1000 (system): trust-based, auto-authenticated
+ *   - UID >= 10000 (apps): packages.list lookup + whitelist check
  *
- * This is simpler than TCP/IP + Keystore Attestation approach.
+ * This keeps db_daemon POSIX-compliant; Android-specific logic is in Hook.
  */
 fn handle_uds_client(stream: UnixStream, store: DataStore) {
     // Phase 3.7: Extract kernel-provided credentials
@@ -252,7 +280,8 @@ fn handle_uds_client(stream: UnixStream, store: DataStore) {
 
     log::info!("[UDS] Client connected: uid={}, pid={}", uid, pid);
 
-    // Phase 3.10: Allow both vendor daemons (UID=1000) and apps (UID>=10000)
+    // Phase 3.11: UID range validation (POSIX-compliant, kept in db_daemon)
+    // Hook handles Android-specific logic (packages.list, whitelist)
     const SYSTEM_UID: u32 = 1000;
     const APP_UID_START: u32 = 10000;
 
@@ -267,31 +296,19 @@ fn handle_uds_client(stream: UnixStream, store: DataStore) {
         return;
     }
 
-    // Phase 3.10: Determine authentication status and package name
-    let (mut authenticated, mut package_name): (bool, Option<String>) = if is_vendor_daemon {
-        log::info!("[UDS] ✅ Vendor daemon connected: uid={} (trust-based)", uid);
-        (true, Some(format!("vendor_daemon_uid{}_pid{}", uid, pid)))
-    } else {
-        // Phase 3.10: Look up package name from UID
-        log::info!("[UDS] 📱 App connected: uid={}, looking up package name...", uid);
+    // Phase 3.11: Delegate authentication to Hook
+    // check_permission=false for now (Layer 1 only)
+    // Layer 2 (Permission) can be enabled by setting check_permission=true
+    let (mut authenticated, mut package_name) = auth_verify_uds_via_hook(uid, pid, false);
 
-        match uid_to_package_name(uid) {
-            Some(pkg_name) => {
-                // Verify package is in allowed list
-                if is_package_allowed(&pkg_name) {
-                    log::info!("[UDS] ✅ App auto-authenticated: uid={}, package={}", uid, pkg_name);
-                    (true, Some(pkg_name))
-                } else {
-                    log::warn!("[UDS] ⚠️  Package '{}' not in allowed list, requiring AUTH", pkg_name);
-                    (false, Some(pkg_name))
-                }
-            }
-            None => {
-                log::warn!("[UDS] ⚠️  Package not found for UID={}, requiring AUTH", uid);
-                (false, None)
-            }
-        }
-    };
+    // If Hook verification succeeded, auto-authenticated
+    // If Hook verification failed but UID is valid, allow connection but require AUTH
+    // (token-based fallback for apps not in whitelist)
+    if authenticated {
+        log::info!("[UDS] ✅ UDS auto-authenticated via Hook: uid={}, package={:?}", uid, package_name);
+    } else {
+        log::warn!("[UDS] ⚠️  UDS auto-auth failed, requiring AUTH command: uid={}", uid);
+    }
 
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
