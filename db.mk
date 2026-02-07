@@ -7,4 +7,4 @@ PRODUCT_PACKAGES += \
 
 # SELinux policy for product partition
 PRODUCT_PRIVATE_SEPOLICY_DIRS += \
-    vendor/db/sepolicy
+    product/db/sepolicy

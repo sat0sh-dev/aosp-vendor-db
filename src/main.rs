@@ -1,10 +1,13 @@
-// Data Broker Daemon - Main Entry Point
-// Phase 1: TCP server with Get/Set APIs (DEPRECATED)
-// Phase 2.5: Auth module integration via FFI (DEPRECATED)
-// Phase 3.0: UDS migration with SO_PEERCRED authentication (DEPRECATED)
-// Phase 3.5: Auth daemon integration (UDS client) (DEPRECATED)
-// Phase 3.6: TCP/IP with Token-based authentication (Hook方式)
-// Phase 3.7: Dual-mode authentication (UDS for vendor daemons, TCP/IP for apps)
+//! Data Broker Daemon - Main Entry Point
+//!
+//! Phase 1: TCP server with Get/Set APIs (DEPRECATED)
+//! Phase 2.5: Auth module integration via FFI (DEPRECATED)
+//! Phase 3.0: UDS migration with SO_PEERCRED authentication (DEPRECATED)
+//! Phase 3.5: Auth daemon integration (UDS client) (DEPRECATED)
+//! Phase 3.6: TCP/IP with Token-based authentication (Hook方式)
+//! Phase 3.7: Dual-mode authentication (UDS for vendor daemons, TCP/IP for apps)
+
+#![allow(clippy::undocumented_unsafe_blocks)]
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
@@ -238,7 +241,7 @@ fn auth_verify_uds_via_hook(uid: u32, pid: u32, check_permission: bool) -> (bool
         if null_pos > 0 {
             String::from_utf8_lossy(&pkg_name_buf[..null_pos]).to_string()
         } else {
-            None.unwrap_or_else(|| "unknown".to_string())
+            "unknown".to_string()
         }
     } else {
         "".to_string()
@@ -323,7 +326,7 @@ fn handle_uds_client(stream: UnixStream, store: DataStore) {
             }
             Ok(_) => {
                 let response = process_command(
-                    &line.trim(),
+                    line.trim(),
                     &store,
                     &mut authenticated,
                     &mut package_name,
@@ -368,7 +371,7 @@ fn handle_client(stream: TcpStream, store: DataStore) {
             }
             Ok(_) => {
                 let response = process_command(
-                    &line.trim(),
+                    line.trim(),
                     &store,
                     &mut authenticated,
                     &mut package_name,
